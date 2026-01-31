@@ -2,23 +2,23 @@ import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart' as ll;
-import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart' as fln;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
-
-final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
-    FlutterLocalNotificationsPlugin();
-
-// ===== SPLASH SCREEN (IDENTICAL to what you loved) =====
+import 'package:timezone/timezone.dart' as tz;
+import 'package:timezone/data/latest.dart' as tz_data;
+import 'package:permission_handler/permission_handler.dart';
+// ===== CRITICAL: Renamed import to avoid conflict =====
+final fln.FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
+    fln.FlutterLocalNotificationsPlugin();
+// ===== SPLASH SCREEN =====
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
-
   @override
   State<SplashScreen> createState() => _SplashScreenState();
 }
-
 class _SplashScreenState extends State<SplashScreen> {
   @override
   void initState() {
@@ -29,7 +29,6 @@ class _SplashScreenState extends State<SplashScreen> {
       );
     });
   }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -86,14 +85,11 @@ class _SplashScreenState extends State<SplashScreen> {
     );
   }
 }
-
 void main() {
   runApp(const MyApp());
 }
-
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
-
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
@@ -107,166 +103,121 @@ class MyApp extends StatelessWidget {
     );
   }
 }
-
-// ===== MAIN APP WITH DATA PERSISTENCE =====
+// ===== MAIN APP =====
 class MyHomePage extends StatefulWidget {
   const MyHomePage({super.key});
-
   @override
   State<MyHomePage> createState() => _MyHomePageState();
 }
-
 class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
   late TabController _tabController;
   late MapController mapController;
-  ll.LatLng mapCenter = const ll.LatLng(40.7128, -74.0060);
   ll.LatLng currentLocation = const ll.LatLng(40.7128, -74.0060);
   Timer? _locationTimer;
   Map<String, bool> _userInsideLocation = {};
   bool _isTrackingEnabled = false;
-
   List<Map<String, dynamic>> locations = [];
   List<Map<String, dynamic>> reminders = [];
-
-  // ===== PERSISTENCE METHODS =====
+  final Map<String, IconData> iconMap = {
+    'home': Icons.home,
+    'work': Icons.work,
+    'school': Icons.school,
+    'location_on': Icons.location_on,
+  };
+  // ===== PERSISTENCE =====
   Future<void> _loadData() async {
     final prefs = await SharedPreferences.getInstance();
-
-    // Load locations
     final locationsJson = prefs.getString('locations');
     if (locationsJson != null && locationsJson.isNotEmpty) {
       setState(() {
         locations = List<Map<String, dynamic>>.from(jsonDecode(locationsJson));
       });
-    } else {
-      // Default locations if none saved
-      setState(() {
-        locations = [
-          {
-            'name': 'Home',
-            'icon': 'home',
-            'lat': 40.7128,
-            'lng': -74.0060,
-            'radius': 100,
-          },
-          {
-            'name': 'Work',
-            'icon': 'work',
-            'lat': 40.7580,
-            'lng': -73.9855,
-            'radius': 150,
-          },
-          {
-            'name': 'College',
-            'icon': 'school',
-            'lat': 40.8075,
-            'lng': -73.9626,
-            'radius': 200,
-          },
-        ];
-      });
     }
-
-    // Load reminders
     final remindersJson = prefs.getString('reminders');
     if (remindersJson != null && remindersJson.isNotEmpty) {
       setState(() {
         reminders = List<Map<String, dynamic>>.from(jsonDecode(remindersJson));
       });
-    } else {
-      // Default reminders if none saved
-      setState(() {
-        reminders = [
-          {
-            'title': 'Keys',
-            'location': 'Home',
-            'trigger': 'on entry',
-            'days': [true, true, true, true, true, false, false],
-          },
-          {
-            'title': 'Wallet',
-            'location': 'Work',
-            'trigger': 'on exit',
-            'days': [true, true, true, true, true, false, false],
-          },
-        ];
-      });
     }
-
-    // Initialize tracking state
     _initializeLocationTracking();
   }
-
   Future<void> _saveLocations() async {
     final prefs = await SharedPreferences.getInstance();
-    // Convert icons to strings for JSON serialization
-    final locationsToSave = locations.map((loc) {
-      String iconStr;
-      if (loc['icon'] is IconData) {
-        iconStr = _iconDataToString(loc['icon'] as IconData);
-      } else {
-        iconStr = loc['icon'] as String;
-      }
-      return {
-        'name': loc['name'],
-        'icon': iconStr,
-        'lat': loc['lat'],
-        'lng': loc['lng'],
-        'radius': loc['radius'],
-      };
-    }).toList();
-    await prefs.setString('locations', jsonEncode(locationsToSave));
+    await prefs.setString('locations', jsonEncode(locations));
   }
-
   Future<void> _saveReminders() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('reminders', jsonEncode(reminders));
   }
-
-  String _iconDataToString(IconData icon) {
-    if (icon == Icons.home) return 'home';
-    if (icon == Icons.work) return 'work';
-    if (icon == Icons.school) return 'school';
-    return 'location_on';
-  }
-
   IconData _stringToIconData(String iconStr) {
-    switch (iconStr) {
-      case 'home':
-        return Icons.home;
-      case 'work':
-        return Icons.work;
-      case 'school':
-        return Icons.school;
-      default:
-        return Icons.location_on;
-    }
+    return iconMap[iconStr] ?? Icons.location_on;
   }
-
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
     mapController = MapController();
     _initializeNotifications();
+    _requestNotificationPermission();
     _initializeMap();
-    _loadData(); // Load saved data on startup
+    _loadData();
   }
-
+  Future<void> _requestNotificationPermission() async {
+    final status = await Permission.notification.request();
+    if (status.isDenied || status.isPermanentlyDenied) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Notifications are disabled. Enable in Settings for reminders to work.')),
+      );
+    }
+  }
   Future<void> _initializeNotifications() async {
-    const AndroidInitializationSettings initializationSettingsAndroid =
-        AndroidInitializationSettings('@mipmap/ic_launcher');
-    const InitializationSettings initializationSettings =
-        InitializationSettings(android: initializationSettingsAndroid);
-    await flutterLocalNotificationsPlugin.initialize(initializationSettings);
+    tz_data.initializeTimeZones();
+    const fln.AndroidInitializationSettings initializationSettingsAndroid =
+        fln.AndroidInitializationSettings('@mipmap/ic_launcher');
+    const String snoozeActionId = 'SNOOZE_ACTION';
+    await flutterLocalNotificationsPlugin.initialize(
+      const fln.InitializationSettings(android: initializationSettingsAndroid),
+      onDidReceiveNotificationResponse: (fln.NotificationResponse response) async {
+        if (response.actionId == snoozeActionId && response.payload != null) {
+          final payloadData = jsonDecode(response.payload!);
+          final title = payloadData['title'];
+          final location = payloadData['location'];
+          final trigger = payloadData['trigger'];
+          await _scheduleSnoozedNotification(title, location, trigger, 45);
+        }
+      },
+    );
   }
-
+  Future<void> _scheduleSnoozedNotification(String title, String location, String trigger, int seconds) async {
+    final scheduledTime = tz.TZDateTime.now(tz.local).add(Duration(seconds: seconds));
+    const fln.AndroidNotificationDetails androidDetails = fln.AndroidNotificationDetails(
+      'location_reminders',
+      'Location Reminders',
+      channelDescription: 'Notifications for location-based reminders',
+      importance: fln.Importance.max,
+      priority: fln.Priority.high,
+      autoCancel: true,
+      fullScreenIntent: true,
+      visibility: fln.NotificationVisibility.public,
+      playSound: true,
+      enableVibration: true,
+    );
+    await flutterLocalNotificationsPlugin.zonedSchedule(
+      DateTime.now().millisecondsSinceEpoch ~/ 1000,
+      title,
+      'Don\'t forget your $title when you $trigger $location! (Snoozed)',
+      scheduledTime,
+      const fln.NotificationDetails(android: androidDetails),
+      uiLocalNotificationDateInterpretation: fln.UILocalNotificationDateInterpretation.absoluteTime,
+      androidScheduleMode: fln.AndroidScheduleMode.exactAllowWhileIdle,
+      payload: jsonEncode({'title': title, 'location': location, 'trigger': trigger}),
+    );
+  }
   void _initializeLocationTracking() {
     for (var location in locations) {
       _userInsideLocation[location['name']] = false;
     }
   }
-
   void _startLocationTracking() {
     if (_isTrackingEnabled) return;
     _isTrackingEnabled = true;
@@ -274,22 +225,17 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
       _checkLocationAndTriggerReminders();
     });
   }
-
   void _stopLocationTracking() {
     _isTrackingEnabled = false;
     _locationTimer?.cancel();
   }
-
   Future<void> _checkLocationAndTriggerReminders() async {
     try {
-      final position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
-      );
-      setState(
-        () =>
-            currentLocation = ll.LatLng(position.latitude, position.longitude),
-      );
-
+      final position = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
+      setState(() {
+        currentLocation = ll.LatLng(position.latitude, position.longitude);
+      });
+      mapController.move(currentLocation, mapController.camera.zoom);
       for (var location in locations) {
         final distance = _calculateDistance(
           currentLocation.latitude,
@@ -297,10 +243,9 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
           location['lat'],
           location['lng'],
         );
-        final radius = (location['radius'] as int) / 1000;
-        final isInside = distance <= radius;
+        final radiusKm = location['radius'] / 1000;
+        final isInside = distance <= radiusKm;
         final wasInside = _userInsideLocation[location['name']] ?? false;
-
         if (isInside && !wasInside) {
           _userInsideLocation[location['name']] = true;
           await _triggerRemindersForLocation(location['name'], 'on entry');
@@ -312,28 +257,15 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
         }
       }
     } catch (e) {
-      print('Error checking location: $e');
+      print('Location error: $e');
     }
   }
-
-  double _calculateDistance(
-    double lat1,
-    double lon1,
-    double lat2,
-    double lon2,
-  ) {
+  double _calculateDistance(double lat1, double lon1, double lat2, double lon2) {
     const p = 0.017453292519943295;
-    final a =
-        0.5 -
-        cos((lat2 - lat1) * p) / 2 +
-        cos(lat1 * p) * cos(lat2 * p) * (1 - cos((lon2 - lon1) * p)) / 2;
-    return 12742 * asin(sqrt(a));
+    final a = 0.5 - cos((lat2 - lat1) * p) / 2 + cos(lat1 * p) * cos(lat2 * p) * (1 - cos((lon2 - lon1) * p)) / 2;
+    return 12742 * asin(sqrt(a)); // km
   }
-
-  Future<void> _triggerRemindersForLocation(
-    String locationName,
-    String triggerType,
-  ) async {
+  Future<void> _triggerRemindersForLocation(String locationName, String triggerType) async {
     final dayOfWeek = DateTime.now().weekday - 1;
     for (var reminder in reminders) {
       if (reminder['location'] != locationName) continue;
@@ -343,92 +275,75 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
       }
     }
   }
-
-  Future<void> _showNotification(
-    String title,
-    String location,
-    String action,
-  ) async {
-    final androidPlatformChannelSpecifics = AndroidNotificationDetails(
+  Future<void> _showNotification(String title, String location, String action) async {
+    const fln.AndroidNotificationAction snoozeAction = fln.AndroidNotificationAction('SNOOZE_ACTION', 'Snooze (45s)');
+    const fln.AndroidNotificationAction dismissAction = fln.AndroidNotificationAction('DISMISS_ACTION', 'Dismiss', cancelNotification: true);
+    const fln.AndroidNotificationDetails androidDetails = fln.AndroidNotificationDetails(
       'location_reminders',
       'Location Reminders',
       channelDescription: 'Notifications for location-based reminders',
-      importance: Importance.max,
-      priority: Priority.high,
+      importance: fln.Importance.max,
+      priority: fln.Priority.high,
+      autoCancel: false,
+      fullScreenIntent: true,
+      visibility: fln.NotificationVisibility.public,
+      playSound: true,
+      enableVibration: true,
+      actions: [snoozeAction, dismissAction],
     );
     await flutterLocalNotificationsPlugin.show(
-      title.hashCode,
+      DateTime.now().millisecondsSinceEpoch,
       title,
-      'You $action $location',
-      NotificationDetails(android: androidPlatformChannelSpecifics),
+      'Don\'t forget your $title when you $action $location!',
+      const fln.NotificationDetails(android: androidDetails),
+      payload: jsonEncode({'title': title, 'location': location, 'trigger': action}),
     );
   }
-
-  void _initializeMap() => _requestLocationPermission();
-
   Future<void> _requestLocationPermission() async {
     final status = await Geolocator.requestPermission();
-    if (status == LocationPermission.whileInUse ||
-        status == LocationPermission.always) {
+    if (status == LocationPermission.whileInUse || status == LocationPermission.always) {
       _getCurrentLocation();
-    } else {
-      print('Location permission denied');
     }
   }
-
   Future<void> _getCurrentLocation() async {
     try {
-      final position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
-      );
+      final position = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
       setState(() {
         currentLocation = ll.LatLng(position.latitude, position.longitude);
-        mapCenter = currentLocation;
       });
+      mapController.move(currentLocation, 15.0);
       _startPositionStream();
     } catch (e) {
       print('Error getting location: $e');
     }
   }
-
   void _startPositionStream() {
     Geolocator.getPositionStream(
-          locationSettings: const LocationSettings(
-            accuracy: LocationAccuracy.high,
-            distanceFilter: 10,
-          ),
-        )
-        .listen((Position position) {
-          setState(
-            () => currentLocation = ll.LatLng(
-              position.latitude,
-              position.longitude,
-            ),
-          );
-        })
-        .onError((error) => print('Location stream error: $error'));
+      locationSettings: const LocationSettings(accuracy: LocationAccuracy.high, distanceFilter: 10),
+    ).listen((Position position) {
+      setState(() {
+        currentLocation = ll.LatLng(position.latitude, position.longitude);
+      });
+      mapController.move(currentLocation, mapController.camera.zoom);
+    }).onError((error) => print('Stream error: $error'));
   }
-
+  void _initializeMap() => _requestLocationPermission();
   void _onMapTapped(ll.LatLng position) => _showAddLocationDialog(position);
-
   void _showAddLocationDialog(ll.LatLng position) {
     final nameController = TextEditingController();
     int radius = 100;
-
+    String selectedIcon = 'location_on';
     showDialog(
       context: context,
       builder: (context) => StatefulBuilder(
-        builder: (context, setState) => AlertDialog(
+        builder: (context, setStateDialog) => AlertDialog(
           title: const Text('Add New Location'),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               TextField(
                 controller: nameController,
-                decoration: const InputDecoration(
-                  hintText: 'Location name',
-                  border: OutlineInputBorder(),
-                ),
+                decoration: const InputDecoration(hintText: 'Location name', border: OutlineInputBorder()),
               ),
               const SizedBox(height: 20),
               Row(
@@ -441,30 +356,47 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
                       max: 1000,
                       divisions: 99,
                       label: '$radius',
-                      onChanged: (value) =>
-                          setState(() => radius = value.toInt()),
+                      onChanged: (v) => setStateDialog(() => radius = v.toInt()),
                     ),
                   ),
                   Text('$radius'),
                 ],
               ),
+              const SizedBox(height: 20),
+              const Text('Choose icon:'),
+              const SizedBox(height: 10),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: iconMap.entries.map((entry) {
+                  final String key = entry.key;
+                  final IconData icon = entry.value;
+                  final bool isSelected = selectedIcon == key;
+                  return GestureDetector(
+                    onTap: () => setStateDialog(() => selectedIcon = key),
+                    child: Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: isSelected ? const Color(0xFF3D3B8C).withOpacity(0.2) : Colors.transparent,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: isSelected ? const Color(0xFF3D3B8C) : Colors.grey),
+                      ),
+                      child: Icon(icon, size: 30, color: const Color(0xFF3D3B8C)),
+                    ),
+                  );
+                }).toList(),
+              ),
             ],
           ),
           actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel'),
-            ),
+            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
             ElevatedButton(
               onPressed: () {
                 if (nameController.text.isNotEmpty) {
-                  _addLocationToList(nameController.text, position, radius);
+                  _addLocationToList(nameController.text, position, radius, selectedIcon);
                   Navigator.pop(context);
                 }
               },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF3D3B8C),
-              ),
+              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF3D3B8C)),
               child: const Text('Add', style: TextStyle(color: Colors.white)),
             ),
           ],
@@ -472,24 +404,112 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
       ),
     );
   }
-
-  void _addLocationToList(String name, ll.LatLng position, int radius) {
+  void _addLocationToList(String name, ll.LatLng position, int radius, String icon) {
     setState(() {
       locations.add({
         'name': name,
-        'icon': 'location_on',
+        'icon': icon,
         'lat': position.latitude,
         'lng': position.longitude,
         'radius': radius,
       });
     });
-    _saveLocations(); // Save after adding
+    _saveLocations();
   }
-
+  void _showEditLocationDialog(int index) {
+    final location = locations[index];
+    final nameController = TextEditingController(text: location['name']);
+    int radius = location['radius'];
+    String selectedIcon = location['icon'] as String;
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setStateDialog) => AlertDialog(
+          title: const Text('Edit Location'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: nameController,
+                decoration: const InputDecoration(hintText: 'Location name', border: OutlineInputBorder()),
+              ),
+              const SizedBox(height: 20),
+              Row(
+                children: [
+                  const Text('Radius (m): '),
+                  Expanded(
+                    child: Slider(
+                      value: radius.toDouble(),
+                      min: 10,
+                      max: 1000,
+                      divisions: 99,
+                      label: '$radius',
+                      onChanged: (v) => setStateDialog(() => radius = v.toInt()),
+                    ),
+                  ),
+                  Text('$radius'),
+                ],
+              ),
+              const SizedBox(height: 20),
+              const Text('Choose icon:'),
+              const SizedBox(height: 10),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: iconMap.entries.map((entry) {
+                  final String key = entry.key;
+                  final IconData icon = entry.value;
+                  final bool isSelected = selectedIcon == key;
+                  return GestureDetector(
+                    onTap: () => setStateDialog(() => selectedIcon = key),
+                    child: Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: isSelected ? const Color(0xFF3D3B8C).withOpacity(0.2) : Colors.transparent,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: isSelected ? const Color(0xFF3D3B8C) : Colors.grey),
+                      ),
+                      child: Icon(icon, size: 30, color: const Color(0xFF3D3B8C)),
+                    ),
+                  );
+                }).toList(),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+            ElevatedButton(
+              onPressed: () {
+                if (nameController.text.isNotEmpty) {
+                  final String oldName = location['name'];
+                  final String newName = nameController.text;
+                  setState(() {
+                    locations[index]['name'] = newName;
+                    locations[index]['icon'] = selectedIcon;
+                    locations[index]['radius'] = radius;
+                    if (newName != oldName) {
+                      for (var rem in reminders) {
+                        if (rem['location'] == oldName) {
+                          rem['location'] = newName;
+                        }
+                      }
+                    }
+                  });
+                  _saveLocations();
+                  _saveReminders();
+                  Navigator.pop(context);
+                }
+              },
+              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF3D3B8C)),
+              child: const Text('Save', style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
   void _showRadiusDialog(int index) {
     final location = locations[index];
     int newRadius = location['radius'];
-
     showDialog(
       context: context,
       builder: (context) => StatefulBuilder(
@@ -498,7 +518,6 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const SizedBox(height: 20),
               Row(
                 children: [
                   const Text('Radius (m): '),
@@ -509,8 +528,7 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
                       max: 1000,
                       divisions: 99,
                       label: '$newRadius',
-                      onChanged: (value) =>
-                          setState(() => newRadius = value.toInt()),
+                      onChanged: (v) => setState(() => newRadius = v.toInt()),
                     ),
                   ),
                   Text('$newRadius'),
@@ -519,21 +537,14 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
             ],
           ),
           actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel'),
-            ),
+            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
             ElevatedButton(
               onPressed: () {
-                setState(() {
-                  locations[index]['radius'] = newRadius;
-                });
-                _saveLocations(); // Save after updating
+                setState(() => locations[index]['radius'] = newRadius);
+                _saveLocations();
                 Navigator.pop(context);
               },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF3D3B8C),
-              ),
+              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF3D3B8C)),
               child: const Text('Save', style: TextStyle(color: Colors.white)),
             ),
           ],
@@ -541,32 +552,20 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
       ),
     );
   }
-
   @override
   void dispose() {
     _tabController.dispose();
     _stopLocationTracking();
     super.dispose();
   }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         backgroundColor: const Color(0xFF3D3B8C),
         elevation: 0,
-        leading: IconButton(
-          icon: const Icon(Icons.menu, color: Colors.white),
-          onPressed: () {},
-        ),
-        title: const Text(
-          'CARRY GO',
-          style: TextStyle(
-            color: Colors.white,
-            fontSize: 20,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
+        leading: IconButton(icon: const Icon(Icons.menu, color: Colors.white), onPressed: () {}),
+        title: const Text('CARRY GO', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
         centerTitle: true,
         actions: [
           Padding(
@@ -575,27 +574,12 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
               child: ElevatedButton.icon(
                 onPressed: () {
                   setState(() {
-                    if (_isTrackingEnabled) {
-                      _stopLocationTracking();
-                    } else {
-                      _startLocationTracking();
-                    }
+                    _isTrackingEnabled ? _stopLocationTracking() : _startLocationTracking();
                   });
                 },
-                icon: Icon(
-                  _isTrackingEnabled ? Icons.location_on : Icons.location_off,
-                  size: 16,
-                  color: Colors.white,
-                ),
-                label: Text(
-                  _isTrackingEnabled ? 'Tracking ON' : 'Tracking OFF',
-                  style: const TextStyle(fontSize: 12, color: Colors.white),
-                ),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: _isTrackingEnabled
-                      ? Colors.green
-                      : Colors.red,
-                ),
+                icon: Icon(_isTrackingEnabled ? Icons.location_on : Icons.location_off, size: 16, color: Colors.white),
+                label: Text(_isTrackingEnabled ? 'Tracking ON' : 'Tracking OFF', style: const TextStyle(fontSize: 12, color: Colors.white)),
+                style: ElevatedButton.styleFrom(backgroundColor: _isTrackingEnabled ? Colors.green : Colors.red),
               ),
             ),
           ),
@@ -606,36 +590,14 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
           labelColor: Colors.white,
           unselectedLabelColor: Colors.grey[300],
           tabs: const [
-            Tab(
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.location_on_outlined),
-                  SizedBox(width: 5),
-                  Text('LOCATIONS'),
-                ],
-              ),
-            ),
-            Tab(
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(Icons.notifications_outlined),
-                  SizedBox(width: 5),
-                  Text('REMINDER'),
-                ],
-              ),
-            ),
+            Tab(child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(Icons.location_on_outlined), SizedBox(width: 5), Text('LOCATIONS')])),
+            Tab(child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(Icons.notifications_outlined), SizedBox(width: 5), Text('REMINDER')])),
           ],
         ),
       ),
-      body: TabBarView(
-        controller: _tabController,
-        children: [_buildLocationsTab(), _buildReminderTab()],
-      ),
+      body: TabBarView(controller: _tabController, children: [_buildLocationsTab(), _buildReminderTab()]),
     );
   }
-
   Widget _buildMapWidget() {
     return FlutterMap(
       mapController: mapController,
@@ -662,8 +624,9 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
                 point: ll.LatLng(location['lat'], location['lng']),
                 radius: location['radius'].toDouble() / 100,
                 useRadiusInMeter: false,
-                color: const Color(0xFF3D3B8C).withValues(alpha: 0.2),
-                borderColor: const Color(0xFF3D3B8C).withValues(alpha: 0.5),
+                // FIXED: Replaced deprecated withOpacity/withValues with explicit ARGB hex
+                color: const Color(0x333D3B8C), // 20% opacity (was .withValues(alpha: 0.2))
+                borderColor: const Color(0x803D3B8C), // 50% opacity (was .withValues(alpha: 0.5))
                 borderStrokeWidth: 2,
               ),
             ],
@@ -687,7 +650,8 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
                       border: Border.all(color: Colors.white, width: 3),
                       boxShadow: [
                         BoxShadow(
-                          color: Colors.blue.withValues(alpha: 0.5),
+                          // FIXED: Replaced deprecated withOpacity/withValues with explicit ARGB hex
+                          color: const Color(0x802196F3), // 50% opacity blue (was .withValues(alpha: 0.5))
                           blurRadius: 8,
                           spreadRadius: 2,
                         ),
@@ -723,7 +687,6 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
             ),
             ...locations.map((location) {
               final iconData = _stringToIconData(location['icon'] as String);
-
               return Marker(
                 point: ll.LatLng(location['lat'], location['lng']),
                 width: 80,
@@ -767,7 +730,6 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
       ],
     );
   }
-
   Widget _buildLocationsTab() {
     return Stack(
       children: [
@@ -775,14 +737,13 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
         Positioned(
           top: 20,
           right: 20,
-          child: FloatingActionButton.extended(
-            onPressed: () {},
+          child: FloatingActionButton(
+            onPressed: () {
+              mapController.move(currentLocation, mapController.camera.zoom);
+            },
             backgroundColor: const Color(0xFF3D3B8C),
-            label: const Text(
-              'ADD LOCATION',
-              style: TextStyle(color: Colors.white),
-            ),
-            icon: const Icon(Icons.add, color: Colors.white),
+            tooltip: 'Center on my location',
+            child: const Icon(Icons.my_location, color: Colors.white),
           ),
         ),
         Positioned(
@@ -792,78 +753,53 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
           child: Container(
             decoration: BoxDecoration(
               color: Colors.white,
-              borderRadius: const BorderRadius.only(
-                topLeft: Radius.circular(20),
-                topRight: Radius.circular(20),
-              ),
-              boxShadow: [
-                BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 10),
-              ],
+              borderRadius: const BorderRadius.only(topLeft: Radius.circular(20), topRight: Radius.circular(20)),
+              boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 10)],
             ),
             child: Column(
               children: [
                 const SizedBox(height: 15),
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 20),
+                  child: Text('Tap on the map to add a new location', style: TextStyle(fontSize: 14, color: Colors.grey)),
+                ),
+                const SizedBox(height: 10),
                 ListView.builder(
                   shrinkWrap: true,
                   physics: const NeverScrollableScrollPhysics(),
                   itemCount: locations.length,
                   itemBuilder: (context, index) {
                     final location = locations[index];
-                    final iconData = _stringToIconData(
-                      location['icon'] as String,
-                    );
-
+                    final iconData = _stringToIconData(location['icon'] as String);
                     return Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 20,
-                        vertical: 10,
-                      ),
+                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
                       child: Row(
                         children: [
                           Container(
                             width: 50,
                             height: 50,
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF3D3B8C),
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: Icon(
-                              iconData,
-                              color: Colors.white,
-                              size: 30,
-                            ),
+                            decoration: BoxDecoration(color: const Color(0xFF3D3B8C), borderRadius: BorderRadius.circular(8)),
+                            child: Icon(iconData, color: Colors.white, size: 30),
                           ),
                           const SizedBox(width: 15),
                           Expanded(
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text(
-                                  location['name'],
-                                  style: const TextStyle(
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                                ),
-                                Text(
-                                  'Radius: ${location['radius']}m',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: Colors.grey[600],
-                                  ),
-                                ),
+                                Text(location['name'], style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500)),
+                                Text('Radius: ${location['radius']}m', style: TextStyle(fontSize: 12, color: Colors.grey[600])),
                               ],
                             ),
                           ),
-                          PopupMenuButton(
+                          PopupMenuButton<String>(
                             onSelected: (value) {
                               if (value == 'radius') {
                                 _showRadiusDialog(index);
+                              } else if (value == 'edit') {
+                                _showEditLocationDialog(index);
                               } else if (value == 'delete') {
-                                setState(() {
-                                  locations.removeAt(index);
-                                });
-                                _saveLocations(); // Save after deletion
+                                setState(() => locations.removeAt(index));
+                                _saveLocations();
                               }
                             },
                             itemBuilder: (context) => [
@@ -871,9 +807,19 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
                                 value: 'radius',
                                 child: Row(
                                   children: [
-                                    Icon(Icons.edit, size: 20),
+                                    Icon(Icons.edit_location_alt, size: 20),
                                     SizedBox(width: 10),
                                     Text('Set Radius'),
+                                  ],
+                                ),
+                              ),
+                              const PopupMenuItem(
+                                value: 'edit',
+                                child: Row(
+                                  children: [
+                                    Icon(Icons.edit, size: 20),
+                                    SizedBox(width: 10),
+                                    Text('Edit Name & Icon'),
                                   ],
                                 ),
                               ),
@@ -881,24 +827,14 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
                                 value: 'delete',
                                 child: Row(
                                   children: [
-                                    Icon(
-                                      Icons.delete,
-                                      size: 20,
-                                      color: Colors.red,
-                                    ),
+                                    Icon(Icons.delete, size: 20, color: Colors.red),
                                     SizedBox(width: 10),
-                                    Text(
-                                      'Delete',
-                                      style: TextStyle(color: Colors.red),
-                                    ),
+                                    Text('Delete', style: TextStyle(color: Colors.red)),
                                   ],
                                 ),
                               ),
                             ],
-                            icon: const Icon(
-                              Icons.more_vert,
-                              color: Colors.grey,
-                            ),
+                            icon: const Icon(Icons.more_vert, color: Colors.grey),
                           ),
                         ],
                       ),
@@ -913,27 +849,25 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
       ],
     );
   }
-
   Widget _buildReminderTab() {
     return ListView(
       padding: const EdgeInsets.all(20),
       children: [
         ElevatedButton.icon(
           onPressed: _showAddReminderDialog,
-          style: ElevatedButton.styleFrom(
-            backgroundColor: const Color(0xFF3D3B8C),
-            padding: const EdgeInsets.symmetric(vertical: 12),
-          ),
+          style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF3D3B8C), padding: const EdgeInsets.symmetric(vertical: 12)),
           icon: const Icon(Icons.add, color: Colors.white),
-          label: const Text(
-            'ADD REMINDER',
-            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-          ),
+          label: const Text('ADD REMINDER', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
         ),
-        const SizedBox(height: 25),
+        const SizedBox(height: 20),
         ...reminders.asMap().entries.map((entry) {
           int index = entry.key;
-          final reminder = entry.value;
+          final reminder = entry.value!;
+          final String? currentLocationValue = locations
+              .map((loc) => loc['name'] as String)
+              .contains(reminder['location'])
+              ? reminder['location']
+              : null;
           return Padding(
             padding: const EdgeInsets.only(bottom: 20),
             child: Column(
@@ -944,31 +878,24 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
                     Expanded(
                       child: TextField(
                         onChanged: (value) {
-                          setState(() {
-                            reminder['title'] = value;
-                          });
-                          _saveReminders(); // Save on change
+                          setState(() => reminder['title'] = value);
+                          _saveReminders();
                         },
                         decoration: InputDecoration(
-                          hintText: reminder['title'],
+                          hintText: reminder['title'].isEmpty ? 'Reminder title' : reminder['title'],
                           hintStyle: const TextStyle(color: Colors.grey),
                           border: InputBorder.none,
                           filled: true,
                           fillColor: Colors.grey[100],
-                          contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 15,
-                            vertical: 12,
-                          ),
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 15, vertical: 12),
                         ),
                       ),
                     ),
                     const SizedBox(width: 10),
                     IconButton(
                       onPressed: () {
-                        setState(() {
-                          reminders.removeAt(index);
-                        });
-                        _saveReminders(); // Save after deletion
+                        setState(() => reminders.removeAt(index));
+                        _saveReminders();
                       },
                       icon: const Icon(Icons.delete, color: Colors.red),
                     ),
@@ -976,30 +903,19 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
                 ),
                 const SizedBox(height: 10),
                 Container(
-                  decoration: BoxDecoration(
-                    color: Colors.grey[100],
-                    borderRadius: BorderRadius.circular(5),
-                  ),
+                  decoration: BoxDecoration(color: Colors.grey[100], borderRadius: BorderRadius.circular(5)),
                   child: Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 10),
                     child: DropdownButton<String>(
                       isExpanded: true,
                       underline: Container(),
-                      value: reminder['location'],
-                      items: locations
-                          .map<DropdownMenuItem<String>>(
-                            (loc) => DropdownMenuItem<String>(
-                              value: loc['name'] as String,
-                              child: Text(loc['name'] as String),
-                            ),
-                          )
-                          .toList(),
+                      value: currentLocationValue,
+                      hint: currentLocationValue == null ? const Text('Location deleted - select new') : null,
+                      items: locations.map((loc) => DropdownMenuItem(value: loc['name'] as String, child: Text(loc['name'] as String))).toList(),
                       onChanged: (value) {
                         if (value != null) {
-                          setState(() {
-                            reminder['location'] = value;
-                          });
-                          _saveReminders(); // Save on change
+                          setState(() => reminder['location'] = value);
+                          _saveReminders();
                         }
                       },
                     ),
@@ -1007,10 +923,7 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
                 ),
                 const SizedBox(height: 10),
                 Container(
-                  decoration: BoxDecoration(
-                    color: Colors.grey[100],
-                    borderRadius: BorderRadius.circular(5),
-                  ),
+                  decoration: BoxDecoration(color: Colors.grey[100], borderRadius: BorderRadius.circular(5)),
                   child: Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 10),
                     child: DropdownButton<String>(
@@ -1018,22 +931,14 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
                       underline: Container(),
                       value: reminder['trigger'],
                       items: const [
-                        DropdownMenuItem(
-                          value: 'on entry',
-                          child: Text('On Entry'),
-                        ),
-                        DropdownMenuItem(
-                          value: 'on exit',
-                          child: Text('On Exit'),
-                        ),
+                        DropdownMenuItem(value: 'on entry', child: Text('On Entry')),
+                        DropdownMenuItem(value: 'on exit', child: Text('On Exit')),
                         DropdownMenuItem(value: 'both', child: Text('Both')),
                       ],
                       onChanged: (value) {
                         if (value != null) {
-                          setState(() {
-                            reminder['trigger'] = value;
-                          });
-                          _saveReminders(); // Save on change
+                          setState(() => reminder['trigger'] = value);
+                          _saveReminders();
                         }
                       },
                     ),
@@ -1042,155 +947,149 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
                 const SizedBox(height: 15),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    ...[' M', 'T', 'W', 'T', 'F', 'S', 'S'].asMap().entries.map(
-                      (e) {
-                        final dayIndex = e.key;
-                        final day = e.value;
-                        final isActive = reminder['days'][dayIndex];
-                        return GestureDetector(
-                          onTap: () {
-                            setState(() {
-                              reminder['days'][dayIndex] =
-                                  !reminder['days'][dayIndex];
-                            });
-                            _saveReminders(); // Save on change
-                          },
-                          child: Container(
-                            width: 35,
-                            height: 35,
-                            decoration: BoxDecoration(
-                              color: isActive
-                                  ? const Color(0xFF3D3B8C)
-                                  : Colors.grey[300],
-                              borderRadius: BorderRadius.circular(5),
-                            ),
-                            child: Center(
-                              child: Text(
-                                day,
-                                style: TextStyle(
-                                  color: isActive
-                                      ? Colors.white
-                                      : Colors.grey[700],
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                            ),
-                          ),
-                        );
+                  children: ['M', 'T', 'W', 'T', 'F', 'S', 'S'].asMap().entries.map((e) {
+                    final dayIndex = e.key;
+                    final day = e.value;
+                    final isActive = reminder['days'][dayIndex] as bool;
+                    return GestureDetector(
+                      onTap: () {
+                        setState(() => reminder['days'][dayIndex] = !reminder['days'][dayIndex]);
+                        _saveReminders();
                       },
-                    ).toList(),
-                  ],
+                      child: Container(
+                        width: 35,
+                        height: 35,
+                        decoration: BoxDecoration(
+                          color: isActive ? const Color(0xFF3D3B8C) : Colors.grey[300],
+                          borderRadius: BorderRadius.circular(5),
+                        ),
+                        child: Center(
+                          child: Text(day, style: TextStyle(color: isActive ? Colors.white : Colors.grey[700], fontWeight: FontWeight.bold)),
+                        ),
+                      ),
+                    );
+                  }).toList(),
                 ),
               ],
             ),
           );
-        }).toList(),
+        }),
       ],
     );
   }
-
   void _showAddReminderDialog() {
     String reminderTitle = '';
-    String selectedLocation = locations.isNotEmpty ? locations[0]['name'] : '';
+    String? selectedLocation = locations.isNotEmpty ? locations[0]['name'] as String : null;
     String selectedTrigger = 'on entry';
-
+    List<bool> selectedDays = [true, true, true, true, true, false, false]; // Default: weekdays only
     showDialog(
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setState) => AlertDialog(
           title: const Text('Add Reminder'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                onChanged: (value) => reminderTitle = value,
-                decoration: const InputDecoration(
-                  hintText: 'Reminder name',
-                  border: OutlineInputBorder(),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  onChanged: (value) => reminderTitle = value,
+                  decoration: const InputDecoration(hintText: 'Reminder name', border: OutlineInputBorder()),
                 ),
-              ),
-              const SizedBox(height: 15),
-              Container(
-                decoration: BoxDecoration(
-                  border: Border.all(color: Colors.grey[400]!),
-                  borderRadius: BorderRadius.circular(5),
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 10),
-                  child: DropdownButton<String>(
-                    isExpanded: true,
-                    underline: Container(),
-                    hint: const Text('Select location'),
-                    value: selectedLocation.isNotEmpty
-                        ? selectedLocation
-                        : null,
-                    items: locations
-                        .map<DropdownMenuItem<String>>(
-                          (loc) => DropdownMenuItem<String>(
-                            value: loc['name'] as String,
-                            child: Text(loc['name'] as String),
-                          ),
-                        )
-                        .toList(),
-                    onChanged: (value) =>
-                        setState(() => selectedLocation = value ?? ''),
+                const SizedBox(height: 15),
+                Container(
+                  decoration: BoxDecoration(border: Border.all(color: Colors.grey), borderRadius: BorderRadius.circular(5)),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                    child: DropdownButton<String>(
+                      isExpanded: true,
+                      underline: Container(),
+                      value: selectedLocation,
+                      hint: const Text('No locations added yet'),
+                      items: locations
+                          .map((loc) => DropdownMenuItem(value: loc['name'] as String, child: Text(loc['name'] as String)))
+                          .toList(),
+                      onChanged: (value) => setState(() => selectedLocation = value),
+                    ),
                   ),
                 ),
-              ),
-              const SizedBox(height: 15),
-              Container(
-                decoration: BoxDecoration(
-                  border: Border.all(color: Colors.grey[400]!),
-                  borderRadius: BorderRadius.circular(5),
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 10),
-                  child: DropdownButton<String>(
-                    isExpanded: true,
-                    underline: Container(),
-                    value: selectedTrigger,
-                    items: const [
-                      DropdownMenuItem(
-                        value: 'on entry',
-                        child: Text('On Entry'),
-                      ),
-                      DropdownMenuItem(
-                        value: 'on exit',
-                        child: Text('On Exit'),
-                      ),
-                      DropdownMenuItem(value: 'both', child: Text('Both')),
-                    ],
-                    onChanged: (value) =>
-                        setState(() => selectedTrigger = value ?? 'on entry'),
+                const SizedBox(height: 15),
+                Container(
+                  decoration: BoxDecoration(border: Border.all(color: Colors.grey), borderRadius: BorderRadius.circular(5)),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                    child: DropdownButton<String>(
+                      isExpanded: true,
+                      underline: Container(),
+                      value: selectedTrigger,
+                      items: const [
+                        DropdownMenuItem(value: 'on entry', child: Text('On Entry')),
+                        DropdownMenuItem(value: 'on exit', child: Text('On Exit')),
+                        DropdownMenuItem(value: 'both', child: Text('Both')),
+                      ],
+                      onChanged: (value) => setState(() => selectedTrigger = value ?? 'on entry'),
+                    ),
                   ),
                 ),
-              ),
-            ],
+                const SizedBox(height: 20),
+                const Text('Active on days:'),
+                const SizedBox(height: 10),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: ['M', 'T', 'W', 'T', 'F', 'S', 'S'].asMap().entries.map((e) {
+                    final dayIndex = e.key;
+                    final day = e.value;
+                    final isActive = selectedDays[dayIndex];
+                    return GestureDetector(
+                      onTap: () {
+                        setState(() => selectedDays[dayIndex] = !selectedDays[dayIndex]);
+                      },
+                      child: Container(
+                        width: 35,
+                        height: 35,
+                        decoration: BoxDecoration(
+                          color: isActive ? const Color(0xFF3D3B8C) : Colors.grey[300],
+                          borderRadius: BorderRadius.circular(5),
+                        ),
+                        child: Center(
+                          child: Text(day, style: TextStyle(color: isActive ? Colors.white : Colors.grey[700], fontWeight: FontWeight.bold)),
+                        ),
+                      ),
+                    );
+                  }).toList(),
+                ),
+                const SizedBox(height: 25),
+                const Center(
+                  child: Text(
+                    'Please turn on location tracking (in the app bar) for reminders to work.',
+                    style: TextStyle(
+                      color: Colors.redAccent,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+              ],
+            ),
           ),
           actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel'),
-            ),
+            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
             ElevatedButton(
               onPressed: () {
-                if (reminderTitle.isNotEmpty && selectedLocation.isNotEmpty) {
+                if (reminderTitle.isNotEmpty && selectedLocation != null) {
                   setState(() {
                     reminders.add({
                       'title': reminderTitle,
                       'location': selectedLocation,
                       'trigger': selectedTrigger,
-                      'days': [true, true, true, true, true, false, false],
+                      'days': selectedDays,
                     });
                   });
-                  _saveReminders(); // Save new reminder
+                  _saveReminders();
                   Navigator.pop(context);
                 }
               },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF3D3B8C),
-              ),
+              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF3D3B8C)),
               child: const Text('Add', style: TextStyle(color: Colors.white)),
             ),
           ],
