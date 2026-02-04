@@ -10,15 +10,41 @@ import 'dart:math';
 import 'package:timezone/timezone.dart' as tz;
 import 'package:timezone/data/latest.dart' as tz_data;
 import 'package:permission_handler/permission_handler.dart';
+
 // ===== CRITICAL: Renamed import to avoid conflict =====
 final fln.FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
     fln.FlutterLocalNotificationsPlugin();
+
+// ===== MENU PAGE =====
+class MenuPage extends StatelessWidget {
+  const MenuPage({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Menu'),
+        backgroundColor: const Color(0xFF3D3B8C),
+        foregroundColor: Colors.white,
+      ),
+      body: const Center(
+        child: Text(
+          'This is your new menu page.\nYou can customize it however you want.',
+          style: TextStyle(fontSize: 18, color: Colors.black54),
+          textAlign: TextAlign.center,
+        ),
+      ),
+    );
+  }
+}
+
 // ===== SPLASH SCREEN =====
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
   @override
   State<SplashScreen> createState() => _SplashScreenState();
 }
+
 class _SplashScreenState extends State<SplashScreen> {
   @override
   void initState() {
@@ -29,6 +55,7 @@ class _SplashScreenState extends State<SplashScreen> {
       );
     });
   }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -85,9 +112,11 @@ class _SplashScreenState extends State<SplashScreen> {
     );
   }
 }
+
 void main() {
   runApp(const MyApp());
 }
+
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
   @override
@@ -103,19 +132,22 @@ class MyApp extends StatelessWidget {
     );
   }
 }
+
 // ===== MAIN APP =====
 class MyHomePage extends StatefulWidget {
   const MyHomePage({super.key});
   @override
   State<MyHomePage> createState() => _MyHomePageState();
 }
+
 class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
   late TabController _tabController;
   late MapController mapController;
   ll.LatLng currentLocation = const ll.LatLng(40.7128, -74.0060);
-  Timer? _locationTimer;
   Map<String, bool> _userInsideLocation = {};
   bool _isTrackingEnabled = false;
+  int _notificationIdCounter = 0; // Safe counter for notification IDs
+
   List<Map<String, dynamic>> locations = [];
   List<Map<String, dynamic>> reminders = [];
   final Map<String, IconData> iconMap = {
@@ -124,6 +156,7 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
     'school': Icons.school,
     'location_on': Icons.location_on,
   };
+
   // ===== PERSISTENCE =====
   Future<void> _loadData() async {
     final prefs = await SharedPreferences.getInstance();
@@ -141,55 +174,141 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
     }
     _initializeLocationTracking();
   }
+
   Future<void> _saveLocations() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('locations', jsonEncode(locations));
   }
+
   Future<void> _saveReminders() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('reminders', jsonEncode(reminders));
   }
+
   IconData _stringToIconData(String iconStr) {
     return iconMap[iconStr] ?? Icons.location_on;
   }
+
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
     mapController = MapController();
     _initializeNotifications();
-    _requestNotificationPermission();
-    _initializeMap();
+
+    _requestAllPermissions();
     _loadData();
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _showFirstTimePermissionDialog();
+    });
   }
-  Future<void> _requestNotificationPermission() async {
-    final status = await Permission.notification.request();
-    if (status.isDenied || status.isPermanentlyDenied) {
+
+  Future<void> _requestAllPermissions() async {
+    final notificationStatus = await Permission.notification.request();
+    if (notificationStatus.isDenied || notificationStatus.isPermanentlyDenied) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text('Notifications are disabled. Enable in Settings for reminders to work.'),
+            action: SnackBarAction(label: 'Settings', onPressed: openAppSettings),
+          ),
+        );
+      }
+    }
+
+    var locationStatus = await Permission.location.status;
+    if (locationStatus.isDenied) {
+      locationStatus = await Permission.location.request();
+    }
+    if (locationStatus.isGranted || locationStatus.isLimited) {
+      locationStatus = await Permission.locationAlways.request();
+    }
+
+    if (locationStatus.isGranted) {
+      _getCurrentLocation();
+    } else if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Notifications are disabled. Enable in Settings for reminders to work.')),
+        SnackBar(
+          content: const Text('Location permission is required for reminders to work properly.'),
+          backgroundColor: Colors.red,
+          action: SnackBarAction(label: 'Open Settings', textColor: Colors.white, onPressed: openAppSettings),
+        ),
       );
     }
   }
+
+  Future<void> _showFirstTimePermissionDialog() async {
+    final prefs = await SharedPreferences.getInstance();
+    final hasSeenDialog = prefs.getBool('hasSeenPermissionDialog') ?? false;
+
+    if (!hasSeenDialog) {
+      await prefs.setBool('hasSeenPermissionDialog', true);
+
+      if (!mounted) return;
+
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => AlertDialog(
+          title: const Text('Permissions Required'),
+          content: const Text(
+            'Thank you for installing CarryGo!\n\n'
+            'To use location-based reminders, please kindly grant:\n'
+            '- Location permission (Allow all the time)\n'
+            '- Notifications permission\n\n'
+            'You can do this in the next screens or via Settings.',
+            style: TextStyle(fontSize: 15),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Later')),
+            ElevatedButton(
+              onPressed: () async {
+                Navigator.pop(context);
+                await openAppSettings();
+              },
+              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF3D3B8C)),
+              child: const Text('Open Settings', style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        ),
+      );
+    }
+  }
+
   Future<void> _initializeNotifications() async {
     tz_data.initializeTimeZones();
     const fln.AndroidInitializationSettings initializationSettingsAndroid =
         fln.AndroidInitializationSettings('@mipmap/ic_launcher');
-    const String snoozeActionId = 'SNOOZE_ACTION';
+
     await flutterLocalNotificationsPlugin.initialize(
       const fln.InitializationSettings(android: initializationSettingsAndroid),
       onDidReceiveNotificationResponse: (fln.NotificationResponse response) async {
-        if (response.actionId == snoozeActionId && response.payload != null) {
-          final payloadData = jsonDecode(response.payload!);
-          final title = payloadData['title'];
-          final location = payloadData['location'];
-          final trigger = payloadData['trigger'];
+        final String? payload = response.payload;
+
+        if (payload == null) return;
+
+        final payloadData = jsonDecode(payload);
+        final String title = payloadData['title'];
+        final String location = payloadData['location'];
+        final String trigger = payloadData['trigger'];
+
+        if (response.actionId == 'SNOOZE_ACTION') {
+          // Snooze: reschedule the same notification after 45 seconds
+          print('Snooze clicked → rescheduling in 45s');
           await _scheduleSnoozedNotification(title, location, trigger, 45);
+        } else if (response.actionId == 'DISMISS_ACTION') {
+          // Dismiss: do nothing extra (already auto-cancels via cancelNotification: true)
+          print('Dismiss clicked');
         }
       },
     );
   }
-  Future<void> _scheduleSnoozedNotification(String title, String location, String trigger, int seconds) async {
+
+  Future<void> _scheduleSnoozedNotification(
+      String title, String location, String trigger, int seconds) async {
     final scheduledTime = tz.TZDateTime.now(tz.local).add(Duration(seconds: seconds));
+
     const fln.AndroidNotificationDetails androidDetails = fln.AndroidNotificationDetails(
       'location_reminders',
       'Location Reminders',
@@ -202,8 +321,11 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
       playSound: true,
       enableVibration: true,
     );
+
+    final int id = _notificationIdCounter++; // Use counter for snoozed notifications too
+
     await flutterLocalNotificationsPlugin.zonedSchedule(
-      DateTime.now().millisecondsSinceEpoch ~/ 1000,
+      id,
       title,
       'Don\'t forget your $title when you $trigger $location! (Snoozed)',
       scheduledTime,
@@ -213,71 +335,67 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
       payload: jsonEncode({'title': title, 'location': location, 'trigger': trigger}),
     );
   }
+
   void _initializeLocationTracking() {
     for (var location in locations) {
       _userInsideLocation[location['name']] = false;
     }
   }
+
   void _startLocationTracking() {
     if (_isTrackingEnabled) return;
+
+    for (var location in locations) {
+      _userInsideLocation[location['name']] = false;
+    }
     _isTrackingEnabled = true;
-    _locationTimer = Timer.periodic(const Duration(seconds: 5), (_) {
-      _checkLocationAndTriggerReminders();
-    });
+
+    _checkLocationAndTriggerReminders();
+    _startPositionStream();
   }
+
   void _stopLocationTracking() {
     _isTrackingEnabled = false;
-    _locationTimer?.cancel();
   }
+
   Future<void> _checkLocationAndTriggerReminders() async {
     try {
-      final position = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
+      final position = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.high);
       setState(() {
         currentLocation = ll.LatLng(position.latitude, position.longitude);
       });
       mapController.move(currentLocation, mapController.camera.zoom);
-      for (var location in locations) {
-        final distance = _calculateDistance(
-          currentLocation.latitude,
-          currentLocation.longitude,
-          location['lat'],
-          location['lng'],
-        );
-        final radiusKm = location['radius'] / 1000;
-        final isInside = distance <= radiusKm;
-        final wasInside = _userInsideLocation[location['name']] ?? false;
-        if (isInside && !wasInside) {
-          _userInsideLocation[location['name']] = true;
-          await _triggerRemindersForLocation(location['name'], 'on entry');
-        } else if (!isInside && wasInside) {
-          _userInsideLocation[location['name']] = false;
-          await _triggerRemindersForLocation(location['name'], 'on exit');
-        } else {
-          _userInsideLocation[location['name']] = isInside;
-        }
-      }
     } catch (e) {
-      print('Location error: $e');
+      print('Location fetch error: $e');
     }
   }
+
   double _calculateDistance(double lat1, double lon1, double lat2, double lon2) {
     const p = 0.017453292519943295;
     final a = 0.5 - cos((lat2 - lat1) * p) / 2 + cos(lat1 * p) * cos(lat2 * p) * (1 - cos((lon2 - lon1) * p)) / 2;
     return 12742 * asin(sqrt(a)); // km
   }
+
   Future<void> _triggerRemindersForLocation(String locationName, String triggerType) async {
+    print('Trigger check → $locationName on $triggerType');
     final dayOfWeek = DateTime.now().weekday - 1;
     for (var reminder in reminders) {
       if (reminder['location'] != locationName) continue;
       if (!(reminder['days'][dayOfWeek] as bool)) continue;
       if (reminder['trigger'] == 'both' || reminder['trigger'] == triggerType) {
+        print('Sending → ${reminder['title']}');
         await _showNotification(reminder['title'], locationName, triggerType);
       }
     }
   }
+
   Future<void> _showNotification(String title, String location, String action) async {
-    const fln.AndroidNotificationAction snoozeAction = fln.AndroidNotificationAction('SNOOZE_ACTION', 'Snooze (45s)');
-    const fln.AndroidNotificationAction dismissAction = fln.AndroidNotificationAction('DISMISS_ACTION', 'Dismiss', cancelNotification: true);
+    const fln.AndroidNotificationAction snoozeAction =
+        fln.AndroidNotificationAction('SNOOZE_ACTION', 'Snooze (45s)');
+    const fln.AndroidNotificationAction dismissAction =
+        fln.AndroidNotificationAction('DISMISS_ACTION', 'Dismiss', cancelNotification: true);
+
     const fln.AndroidNotificationDetails androidDetails = fln.AndroidNotificationDetails(
       'location_reminders',
       'Location Reminders',
@@ -291,44 +409,77 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
       enableVibration: true,
       actions: [snoozeAction, dismissAction],
     );
+
+    final int notificationId = _notificationIdCounter++;
+    print('Showing notification with safe ID: $notificationId');
+
     await flutterLocalNotificationsPlugin.show(
-      DateTime.now().millisecondsSinceEpoch,
+      notificationId,
       title,
       'Don\'t forget your $title when you $action $location!',
       const fln.NotificationDetails(android: androidDetails),
       payload: jsonEncode({'title': title, 'location': location, 'trigger': action}),
     );
   }
-  Future<void> _requestLocationPermission() async {
-    final status = await Geolocator.requestPermission();
-    if (status == LocationPermission.whileInUse || status == LocationPermission.always) {
-      _getCurrentLocation();
-    }
-  }
+
   Future<void> _getCurrentLocation() async {
     try {
-      final position = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
+      final position = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.high);
       setState(() {
         currentLocation = ll.LatLng(position.latitude, position.longitude);
       });
       mapController.move(currentLocation, 15.0);
-      _startPositionStream();
     } catch (e) {
       print('Error getting location: $e');
     }
   }
+
   void _startPositionStream() {
     Geolocator.getPositionStream(
-      locationSettings: const LocationSettings(accuracy: LocationAccuracy.high, distanceFilter: 10),
+      locationSettings: LocationSettings(
+        accuracy: LocationAccuracy.high,
+        distanceFilter: 3,
+      ),
     ).listen((Position position) {
       setState(() {
         currentLocation = ll.LatLng(position.latitude, position.longitude);
       });
-      mapController.move(currentLocation, mapController.camera.zoom);
-    }).onError((error) => print('Stream error: $error'));
+      mapController.move(currentLocation, 16.0);
+
+      print('GPS update → lat: ${position.latitude}, lng: ${position.longitude}');
+
+      for (var location in locations) {
+        final distance = _calculateDistance(
+          currentLocation.latitude,
+          currentLocation.longitude,
+          location['lat'],
+          location['lng'],
+        );
+        final radiusKm = location['radius'] / 1000.0;
+        final isInside = distance <= radiusKm + 0.05;
+
+        final wasInside = _userInsideLocation[location['name']] ?? false;
+
+        print('Distance to ${location['name']}: ${distance.toStringAsFixed(3)} km (radius ${radiusKm.toStringAsFixed(3)} km) → ${isInside ? 'INSIDE' : 'OUTSIDE'}');
+
+        if (isInside && !wasInside) {
+          _userInsideLocation[location['name']] = true;
+          print('ENTRY DETECTED → ${location['name']}');
+          _triggerRemindersForLocation(location['name'], 'on entry');
+        } else if (!isInside && wasInside) {
+          _userInsideLocation[location['name']] = false;
+          print('EXIT DETECTED → ${location['name']}');
+          _triggerRemindersForLocation(location['name'], 'on exit');
+        } else {
+          _userInsideLocation[location['name']] = isInside;
+        }
+      }
+    }).onError((error) => print('Position stream error: $error'));
   }
-  void _initializeMap() => _requestLocationPermission();
+
   void _onMapTapped(ll.LatLng position) => _showAddLocationDialog(position);
+
   void _showAddLocationDialog(ll.LatLng position) {
     final nameController = TextEditingController();
     int radius = 100;
@@ -404,6 +555,7 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
       ),
     );
   }
+
   void _addLocationToList(String name, ll.LatLng position, int radius, String icon) {
     setState(() {
       locations.add({
@@ -416,6 +568,7 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
     });
     _saveLocations();
   }
+
   void _showEditLocationDialog(int index) {
     final location = locations[index];
     final nameController = TextEditingController(text: location['name']);
@@ -507,6 +660,7 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
       ),
     );
   }
+
   void _showRadiusDialog(int index) {
     final location = locations[index];
     int newRadius = location['radius'];
@@ -552,20 +706,33 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
       ),
     );
   }
+
   @override
   void dispose() {
     _tabController.dispose();
-    _stopLocationTracking();
     super.dispose();
   }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         backgroundColor: const Color(0xFF3D3B8C),
         elevation: 0,
-        leading: IconButton(icon: const Icon(Icons.menu, color: Colors.white), onPressed: () {}),
-        title: const Text('CARRY GO', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold)),
+        leading: IconButton(
+          icon: const Icon(Icons.menu, color: Colors.white),
+          onPressed: () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(builder: (context) => const MenuPage()),
+            );
+          },
+        ),
+        title: const Text('CARRY GO',
+            style: TextStyle(
+                color: Colors.white,
+                fontSize: 20,
+                fontWeight: FontWeight.bold)),
         centerTitle: true,
         actions: [
           Padding(
@@ -574,12 +741,20 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
               child: ElevatedButton.icon(
                 onPressed: () {
                   setState(() {
-                    _isTrackingEnabled ? _stopLocationTracking() : _startLocationTracking();
+                    _isTrackingEnabled
+                        ? _stopLocationTracking()
+                        : _startLocationTracking();
                   });
                 },
-                icon: Icon(_isTrackingEnabled ? Icons.location_on : Icons.location_off, size: 16, color: Colors.white),
-                label: Text(_isTrackingEnabled ? 'Tracking ON' : 'Tracking OFF', style: const TextStyle(fontSize: 12, color: Colors.white)),
-                style: ElevatedButton.styleFrom(backgroundColor: _isTrackingEnabled ? Colors.green : Colors.red),
+                icon: Icon(
+                    _isTrackingEnabled ? Icons.location_on : Icons.location_off,
+                    size: 16,
+                    color: Colors.white),
+                label: Text(_isTrackingEnabled ? 'Tracking ON' : 'Tracking OFF',
+                    style: const TextStyle(fontSize: 12, color: Colors.white)),
+                style: ElevatedButton.styleFrom(
+                    backgroundColor:
+                        _isTrackingEnabled ? Colors.green : Colors.red),
               ),
             ),
           ),
@@ -590,14 +765,31 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
           labelColor: Colors.white,
           unselectedLabelColor: Colors.grey[300],
           tabs: const [
-            Tab(child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(Icons.location_on_outlined), SizedBox(width: 5), Text('LOCATIONS')])),
-            Tab(child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(Icons.notifications_outlined), SizedBox(width: 5), Text('REMINDER')])),
+            Tab(
+                child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                  Icon(Icons.location_on_outlined),
+                  SizedBox(width: 5),
+                  Text('LOCATIONS')
+                ])),
+            Tab(
+                child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                  Icon(Icons.notifications_outlined),
+                  SizedBox(width: 5),
+                  Text('REMINDER')
+                ])),
           ],
         ),
       ),
-      body: TabBarView(controller: _tabController, children: [_buildLocationsTab(), _buildReminderTab()]),
+      body: TabBarView(
+          controller: _tabController,
+          children: [_buildLocationsTab(), _buildReminderTab()]),
     );
   }
+
   Widget _buildMapWidget() {
     return FlutterMap(
       mapController: mapController,
@@ -611,27 +803,21 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
       ),
       children: [
         TileLayer(
-          // FIXED: Removed extra spaces in URL
           urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-          userAgentPackageName: 'com.example.my_android_app',
-          tileSize: 256,
-          keepBuffer: 2,
+          userAgentPackageName: 'com.example.carrygo',
         ),
-        ...locations.map(
-          (location) => CircleLayer(
-            circles: [
-              CircleMarker(
-                point: ll.LatLng(location['lat'], location['lng']),
-                radius: location['radius'].toDouble() / 100,
-                useRadiusInMeter: false,
-                // FIXED: Replaced deprecated withOpacity/withValues with explicit ARGB hex
-                color: const Color(0x333D3B8C), // 20% opacity (was .withValues(alpha: 0.2))
-                borderColor: const Color(0x803D3B8C), // 50% opacity (was .withValues(alpha: 0.5))
-                borderStrokeWidth: 2,
-              ),
-            ],
-          ),
-        ),
+        ...locations.map((location) => CircleLayer(
+              circles: [
+                CircleMarker(
+                  point: ll.LatLng(location['lat'], location['lng']),
+                  radius: location['radius'].toDouble(),
+                  useRadiusInMeter: true,
+                  color: const Color(0x333D3B8C),
+                  borderColor: const Color(0x803D3B8C),
+                  borderStrokeWidth: 3,
+                ),
+              ],
+            )),
         MarkerLayer(
           markers: [
             Marker(
@@ -650,37 +836,26 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
                       border: Border.all(color: Colors.white, width: 3),
                       boxShadow: [
                         BoxShadow(
-                          // FIXED: Replaced deprecated withOpacity/withValues with explicit ARGB hex
-                          color: const Color(0x802196F3), // 50% opacity blue (was .withValues(alpha: 0.5))
-                          blurRadius: 8,
-                          spreadRadius: 2,
-                        ),
+                            color: Colors.blue.withOpacity(0.5),
+                            blurRadius: 8,
+                            spreadRadius: 2)
                       ],
                     ),
-                    child: const Icon(
-                      Icons.my_location,
-                      color: Colors.white,
-                      size: 18,
-                    ),
+                    child: const Icon(Icons.my_location,
+                        color: Colors.white, size: 18),
                   ),
                   const SizedBox(height: 5),
                   Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 6,
-                      vertical: 2,
-                    ),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                     decoration: BoxDecoration(
-                      color: Colors.blue,
-                      borderRadius: BorderRadius.circular(3),
-                    ),
-                    child: const Text(
-                      'You',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 10,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
+                        color: Colors.blue,
+                        borderRadius: BorderRadius.circular(3)),
+                    child: const Text('You',
+                        style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold)),
                   ),
                 ],
               ),
@@ -706,30 +881,24 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
                     ),
                     Container(
                       padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 4,
-                      ),
+                          horizontal: 8, vertical: 4),
                       decoration: BoxDecoration(
-                        color: Colors.black87,
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                      child: Text(
-                        location['name'],
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 12,
-                        ),
-                      ),
+                          color: Colors.black.withOpacity(0.87),
+                          borderRadius: BorderRadius.circular(4)),
+                      child: Text(location['name'],
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 12)),
                     ),
                   ],
                 ),
               );
-            }).toList(),
+            }),
           ],
         ),
       ],
     );
   }
+
   Widget _buildLocationsTab() {
     return Stack(
       children: [
@@ -753,15 +922,19 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
           child: Container(
             decoration: BoxDecoration(
               color: Colors.white,
-              borderRadius: const BorderRadius.only(topLeft: Radius.circular(20), topRight: Radius.circular(20)),
-              boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 10)],
+              borderRadius: const BorderRadius.only(
+                  topLeft: Radius.circular(20), topRight: Radius.circular(20)),
+              boxShadow: [
+                BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 10)
+              ],
             ),
             child: Column(
               children: [
                 const SizedBox(height: 15),
                 const Padding(
                   padding: EdgeInsets.symmetric(horizontal: 20),
-                  child: Text('Tap on the map to add a new location', style: TextStyle(fontSize: 14, color: Colors.grey)),
+                  child: Text('Tap on the map to add a new location',
+                      style: TextStyle(fontSize: 14, color: Colors.grey)),
                 ),
                 const SizedBox(height: 10),
                 ListView.builder(
@@ -770,24 +943,34 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
                   itemCount: locations.length,
                   itemBuilder: (context, index) {
                     final location = locations[index];
-                    final iconData = _stringToIconData(location['icon'] as String);
+                    final iconData =
+                        _stringToIconData(location['icon'] as String);
                     return Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 20, vertical: 10),
                       child: Row(
                         children: [
                           Container(
                             width: 50,
                             height: 50,
-                            decoration: BoxDecoration(color: const Color(0xFF3D3B8C), borderRadius: BorderRadius.circular(8)),
-                            child: Icon(iconData, color: Colors.white, size: 30),
+                            decoration: BoxDecoration(
+                                color: const Color(0xFF3D3B8C),
+                                borderRadius: BorderRadius.circular(8)),
+                            child:
+                                Icon(iconData, color: Colors.white, size: 30),
                           ),
                           const SizedBox(width: 15),
                           Expanded(
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Text(location['name'], style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500)),
-                                Text('Radius: ${location['radius']}m', style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+                                Text(location['name'],
+                                    style: const TextStyle(
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.w500)),
+                                Text('Radius: ${location['radius']}m',
+                                    style: TextStyle(
+                                        fontSize: 12, color: Colors.grey[600])),
                               ],
                             ),
                           ),
@@ -827,14 +1010,17 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
                                 value: 'delete',
                                 child: Row(
                                   children: [
-                                    Icon(Icons.delete, size: 20, color: Colors.red),
+                                    Icon(Icons.delete,
+                                        size: 20, color: Colors.red),
                                     SizedBox(width: 10),
-                                    Text('Delete', style: TextStyle(color: Colors.red)),
+                                    Text('Delete',
+                                        style: TextStyle(color: Colors.red)),
                                   ],
                                 ),
                               ),
                             ],
-                            icon: const Icon(Icons.more_vert, color: Colors.grey),
+                            icon:
+                                const Icon(Icons.more_vert, color: Colors.grey),
                           ),
                         ],
                       ),
@@ -849,23 +1035,28 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
       ],
     );
   }
+
   Widget _buildReminderTab() {
     return ListView(
       padding: const EdgeInsets.all(20),
       children: [
         ElevatedButton.icon(
           onPressed: _showAddReminderDialog,
-          style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF3D3B8C), padding: const EdgeInsets.symmetric(vertical: 12)),
+          style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF3D3B8C),
+              padding: const EdgeInsets.symmetric(vertical: 12)),
           icon: const Icon(Icons.add, color: Colors.white),
-          label: const Text('ADD REMINDER', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          label: const Text('ADD REMINDER',
+              style:
+                  TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
         ),
         const SizedBox(height: 20),
         ...reminders.asMap().entries.map((entry) {
           int index = entry.key;
-          final reminder = entry.value!;
+          final reminder = entry.value;
           final String? currentLocationValue = locations
-              .map((loc) => loc['name'] as String)
-              .contains(reminder['location'])
+                  .map((loc) => loc['name'] as String)
+                  .contains(reminder['location'])
               ? reminder['location']
               : null;
           return Padding(
@@ -882,12 +1073,15 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
                           _saveReminders();
                         },
                         decoration: InputDecoration(
-                          hintText: reminder['title'].isEmpty ? 'Reminder title' : reminder['title'],
+                          hintText: reminder['title'].isEmpty
+                              ? 'Reminder title'
+                              : reminder['title'],
                           hintStyle: const TextStyle(color: Colors.grey),
                           border: InputBorder.none,
                           filled: true,
                           fillColor: Colors.grey[100],
-                          contentPadding: const EdgeInsets.symmetric(horizontal: 15, vertical: 12),
+                          contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 15, vertical: 12),
                         ),
                       ),
                     ),
@@ -903,15 +1097,23 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
                 ),
                 const SizedBox(height: 10),
                 Container(
-                  decoration: BoxDecoration(color: Colors.grey[100], borderRadius: BorderRadius.circular(5)),
+                  decoration: BoxDecoration(
+                      color: Colors.grey[100],
+                      borderRadius: BorderRadius.circular(5)),
                   child: Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 10),
                     child: DropdownButton<String>(
                       isExpanded: true,
                       underline: Container(),
                       value: currentLocationValue,
-                      hint: currentLocationValue == null ? const Text('Location deleted - select new') : null,
-                      items: locations.map((loc) => DropdownMenuItem(value: loc['name'] as String, child: Text(loc['name'] as String))).toList(),
+                      hint: currentLocationValue == null
+                          ? const Text('Location deleted - select new')
+                          : null,
+                      items: locations
+                          .map((loc) => DropdownMenuItem(
+                              value: loc['name'] as String,
+                              child: Text(loc['name'] as String)))
+                          .toList(),
                       onChanged: (value) {
                         if (value != null) {
                           setState(() => reminder['location'] = value);
@@ -923,7 +1125,9 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
                 ),
                 const SizedBox(height: 10),
                 Container(
-                  decoration: BoxDecoration(color: Colors.grey[100], borderRadius: BorderRadius.circular(5)),
+                  decoration: BoxDecoration(
+                      color: Colors.grey[100],
+                      borderRadius: BorderRadius.circular(5)),
                   child: Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 10),
                     child: DropdownButton<String>(
@@ -931,8 +1135,10 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
                       underline: Container(),
                       value: reminder['trigger'],
                       items: const [
-                        DropdownMenuItem(value: 'on entry', child: Text('On Entry')),
-                        DropdownMenuItem(value: 'on exit', child: Text('On Exit')),
+                        DropdownMenuItem(
+                            value: 'on entry', child: Text('On Entry')),
+                        DropdownMenuItem(
+                            value: 'on exit', child: Text('On Exit')),
                         DropdownMenuItem(value: 'both', child: Text('Both')),
                       ],
                       onChanged: (value) {
@@ -947,24 +1153,35 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
                 const SizedBox(height: 15),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: ['M', 'T', 'W', 'T', 'F', 'S', 'S'].asMap().entries.map((e) {
+                  children: ['M', 'T', 'W', 'T', 'F', 'S', 'S']
+                      .asMap()
+                      .entries
+                      .map((e) {
                     final dayIndex = e.key;
                     final day = e.value;
                     final isActive = reminder['days'][dayIndex] as bool;
                     return GestureDetector(
                       onTap: () {
-                        setState(() => reminder['days'][dayIndex] = !reminder['days'][dayIndex]);
+                        setState(() => reminder['days'][dayIndex] =
+                            !reminder['days'][dayIndex]);
                         _saveReminders();
                       },
                       child: Container(
                         width: 35,
                         height: 35,
                         decoration: BoxDecoration(
-                          color: isActive ? const Color(0xFF3D3B8C) : Colors.grey[300],
+                          color: isActive
+                              ? const Color(0xFF3D3B8C)
+                              : Colors.grey[300],
                           borderRadius: BorderRadius.circular(5),
                         ),
                         child: Center(
-                          child: Text(day, style: TextStyle(color: isActive ? Colors.white : Colors.grey[700], fontWeight: FontWeight.bold)),
+                          child: Text(day,
+                              style: TextStyle(
+                                  color: isActive
+                                      ? Colors.white
+                                      : Colors.grey[700],
+                                  fontWeight: FontWeight.bold)),
                         ),
                       ),
                     );
@@ -977,11 +1194,21 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
       ],
     );
   }
+
   void _showAddReminderDialog() {
     String reminderTitle = '';
-    String? selectedLocation = locations.isNotEmpty ? locations[0]['name'] as String : null;
+    String? selectedLocation =
+        locations.isNotEmpty ? locations[0]['name'] as String : null;
     String selectedTrigger = 'on entry';
-    List<bool> selectedDays = [true, true, true, true, true, false, false]; // Default: weekdays only
+    List<bool> selectedDays = [
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false
+    ]; // Default: weekdays only
     showDialog(
       context: context,
       builder: (context) => StatefulBuilder(
@@ -993,11 +1220,14 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
               children: [
                 TextField(
                   onChanged: (value) => reminderTitle = value,
-                  decoration: const InputDecoration(hintText: 'Reminder name', border: OutlineInputBorder()),
+                  decoration: const InputDecoration(
+                      hintText: 'Reminder name', border: OutlineInputBorder()),
                 ),
                 const SizedBox(height: 15),
                 Container(
-                  decoration: BoxDecoration(border: Border.all(color: Colors.grey), borderRadius: BorderRadius.circular(5)),
+                  decoration: BoxDecoration(
+                      border: Border.all(color: Colors.grey),
+                      borderRadius: BorderRadius.circular(5)),
                   child: Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 10),
                     child: DropdownButton<String>(
@@ -1006,15 +1236,20 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
                       value: selectedLocation,
                       hint: const Text('No locations added yet'),
                       items: locations
-                          .map((loc) => DropdownMenuItem(value: loc['name'] as String, child: Text(loc['name'] as String)))
+                          .map((loc) => DropdownMenuItem(
+                              value: loc['name'] as String,
+                              child: Text(loc['name'] as String)))
                           .toList(),
-                      onChanged: (value) => setState(() => selectedLocation = value),
+                      onChanged: (value) =>
+                          setState(() => selectedLocation = value),
                     ),
                   ),
                 ),
                 const SizedBox(height: 15),
                 Container(
-                  decoration: BoxDecoration(border: Border.all(color: Colors.grey), borderRadius: BorderRadius.circular(5)),
+                  decoration: BoxDecoration(
+                      border: Border.all(color: Colors.grey),
+                      borderRadius: BorderRadius.circular(5)),
                   child: Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 10),
                     child: DropdownButton<String>(
@@ -1022,11 +1257,14 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
                       underline: Container(),
                       value: selectedTrigger,
                       items: const [
-                        DropdownMenuItem(value: 'on entry', child: Text('On Entry')),
-                        DropdownMenuItem(value: 'on exit', child: Text('On Exit')),
+                        DropdownMenuItem(
+                            value: 'on entry', child: Text('On Entry')),
+                        DropdownMenuItem(
+                            value: 'on exit', child: Text('On Exit')),
                         DropdownMenuItem(value: 'both', child: Text('Both')),
                       ],
-                      onChanged: (value) => setState(() => selectedTrigger = value ?? 'on entry'),
+                      onChanged: (value) =>
+                          setState(() => selectedTrigger = value ?? 'on entry'),
                     ),
                   ),
                 ),
@@ -1035,23 +1273,34 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
                 const SizedBox(height: 10),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: ['M', 'T', 'W', 'T', 'F', 'S', 'S'].asMap().entries.map((e) {
+                  children: ['M', 'T', 'W', 'T', 'F', 'S', 'S']
+                      .asMap()
+                      .entries
+                      .map((e) {
                     final dayIndex = e.key;
                     final day = e.value;
                     final isActive = selectedDays[dayIndex];
                     return GestureDetector(
                       onTap: () {
-                        setState(() => selectedDays[dayIndex] = !selectedDays[dayIndex]);
+                        setState(() =>
+                            selectedDays[dayIndex] = !selectedDays[dayIndex]);
                       },
                       child: Container(
                         width: 35,
                         height: 35,
                         decoration: BoxDecoration(
-                          color: isActive ? const Color(0xFF3D3B8C) : Colors.grey[300],
+                          color: isActive
+                              ? const Color(0xFF3D3B8C)
+                              : Colors.grey[300],
                           borderRadius: BorderRadius.circular(5),
                         ),
                         child: Center(
-                          child: Text(day, style: TextStyle(color: isActive ? Colors.white : Colors.grey[700], fontWeight: FontWeight.bold)),
+                          child: Text(day,
+                              style: TextStyle(
+                                  color: isActive
+                                      ? Colors.white
+                                      : Colors.grey[700],
+                                  fontWeight: FontWeight.bold)),
                         ),
                       ),
                     );
@@ -1073,7 +1322,9 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
             ),
           ),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+            TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Cancel')),
             ElevatedButton(
               onPressed: () {
                 if (reminderTitle.isNotEmpty && selectedLocation != null) {
@@ -1089,7 +1340,8 @@ class _MyHomePageState extends State<MyHomePage> with TickerProviderStateMixin {
                   Navigator.pop(context);
                 }
               },
-              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF3D3B8C)),
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF3D3B8C)),
               child: const Text('Add', style: TextStyle(color: Colors.white)),
             ),
           ],
